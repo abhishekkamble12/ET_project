@@ -26,9 +26,14 @@ def _make_state(**overrides) -> dict:
         "query": "test query",
         "platform": "linkedin",
         "tasks": [],
+        "knowledge_context": None,
+        "strategy": None,
         "generated_content": None,
+        "optimization_attempts": 0,
         "compliance_result": None,
         "engagement_analysis": None,
+        "localization": None,
+        "formatted_posts": None,
         "human_decision": None,
         "edit_instructions": None,
         "memory_context": None,
@@ -39,20 +44,18 @@ def _make_state(**overrides) -> dict:
 
 # ---------------------------------------------------------------------------
 # Property 1: Compliance routing is exhaustive and correct
-# Validates: Requirements 1.4, 1.5, 1.6
 # ---------------------------------------------------------------------------
 
 VALID_COMPLIANCE_STATUSES = ["approved", "needs_fix", "rejected"]
 EXPECTED_COMPLIANCE_ROUTES = {
     "approved": "engagement_analysis_agent",
-    "needs_fix": "compliance_agent",
+    "needs_fix": END,   # compliance_node loops internally; needs_fix on exit → END
     "rejected": END,
 }
 
 @settings(max_examples=100, suppress_health_check=[HealthCheck.too_slow])
 @given(status=st.sampled_from(VALID_COMPLIANCE_STATUSES))
 def test_p1_compliance_routing_exhaustive(status):
-    # Feature: social-media-multi-agent-system, Property 1: Compliance routing is exhaustive and correct
     compliance_result = ComplianceResult(
         status=status,
         reason="test reason" if status == "rejected" else "",
@@ -62,14 +65,12 @@ def test_p1_compliance_routing_exhaustive(status):
     result = route_compliance(state)
     expected = EXPECTED_COMPLIANCE_ROUTES[status]
     assert result == expected, f"For status={status!r}, expected {expected!r}, got {result!r}"
-    # Must never return an unrecognized node name
-    recognized = {"engagement_analysis_agent", "compliance_agent", END}
+    recognized = {"engagement_analysis_agent", END}
     assert result in recognized, f"route_compliance returned unrecognized value: {result!r}"
 
 
 # ---------------------------------------------------------------------------
 # Property 2: Human review routing is exhaustive and correct
-# Validates: Requirements 1.8, 1.9, 6.2
 # ---------------------------------------------------------------------------
 
 VALID_HUMAN_DECISIONS = ["publish", "edit", "no"]
@@ -82,7 +83,6 @@ EXPECTED_HUMAN_ROUTES = {
 @settings(max_examples=100, suppress_health_check=[HealthCheck.too_slow])
 @given(decision=st.sampled_from(VALID_HUMAN_DECISIONS))
 def test_p2_human_review_routing_valid(decision):
-    # Feature: social-media-multi-agent-system, Property 2: Human review routing is exhaustive and correct
     state = _make_state(human_decision=decision)
     result = route_human_review(state)
     expected = EXPECTED_HUMAN_ROUTES[decision]
@@ -92,7 +92,6 @@ def test_p2_human_review_routing_valid(decision):
 @settings(max_examples=100, suppress_health_check=[HealthCheck.too_slow])
 @given(decision=st.text(min_size=1, max_size=50).filter(lambda s: s not in VALID_HUMAN_DECISIONS))
 def test_p2_human_review_routing_invalid_raises(decision):
-    # Feature: social-media-multi-agent-system, Property 2: Human review routing raises ValueError for invalid input
     state = _make_state(human_decision=decision)
     with pytest.raises(ValueError):
         route_human_review(state)
@@ -100,13 +99,11 @@ def test_p2_human_review_routing_invalid_raises(decision):
 
 # ---------------------------------------------------------------------------
 # Property 8: Unsupported platform raises validation error before any agent runs
-# Validates: Requirements 7.3
 # ---------------------------------------------------------------------------
 
 @settings(max_examples=100, suppress_health_check=[HealthCheck.too_slow])
 @given(platform=st.text(min_size=1, max_size=50).filter(lambda s: s.lower() not in SUPPORTED_PLATFORMS))
 def test_p8_unsupported_platform_raises_before_agents(platform):
-    # Feature: social-media-multi-agent-system, Property 8: Unsupported platform raises validation error before any agent runs
     content_agent_called = []
 
     def mock_content_node(state):
@@ -120,5 +117,5 @@ def test_p8_unsupported_platform_raises_before_agents(platform):
         with pytest.raises(ValueError) as exc_info:
             run_pipeline(query="test", platform=platform)
 
-    assert len(content_agent_called) == 0, "No agent node should be invoked for unsupported platform"
+    assert len(content_agent_called) == 0
     assert platform.lower() in str(exc_info.value).lower() or "unsupported" in str(exc_info.value).lower()

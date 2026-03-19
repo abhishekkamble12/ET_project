@@ -14,13 +14,19 @@ from services.Engagement import EngagementAnalysis, engagement_node
 def _make_state(caption: str, platform: str) -> dict:
     generated = MagicMock()
     generated.caption = caption
+    generated.hashtags = []
     return {
         "query": "test",
         "platform": platform,
         "tasks": [],
+        "knowledge_context": None,
+        "strategy": None,
         "generated_content": generated,
+        "optimization_attempts": 0,
         "compliance_result": None,
         "engagement_analysis": None,
+        "localization": None,
+        "formatted_posts": None,
         "human_decision": None,
         "edit_instructions": None,
         "memory_context": None,
@@ -36,17 +42,17 @@ def _make_state(caption: str, platform: str) -> dict:
     summary=st.text(min_size=1, max_size=100),
 )
 def test_p7_engagement_analysis_structural_invariant(caption, platform, score, reaction, summary):
-    # Feature: social-media-multi-agent-system, Property 7: EngagementAnalysis structural invariant
-    # Validates: Requirements 5.1
     mock_result = EngagementAnalysis(
         expected_engagement_score=score,
         predicted_audience_reaction=reaction,
         post_impact_summary=summary,
+        improvements=[],
     )
     state = _make_state(caption, platform)
 
     with patch("services.Engagement._get_llm") as mock_get_llm, \
-         patch("services.Engagement.parser") as mock_parser:
+         patch("services.Engagement.parser") as mock_parser, \
+         patch("services.Engagement._persist_engagement"):
         mock_llm = MagicMock()
         mock_get_llm.return_value = mock_llm
         mock_llm.invoke.return_value = MagicMock(content="mocked")

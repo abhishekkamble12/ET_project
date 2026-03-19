@@ -1,111 +1,175 @@
+"""
+Supervisor – LangGraph pipeline orchestrator.
+
+Pipeline order:
+  knowledge → strategy → content → compliance (loop until approved/rejected)
+  → engagement → [optimization loop if score < 0.65, max 2 retries]
+  → localization → formatter → human_review
+
+Optimization loop:
+  If engagement score < ENGAGEMENT_THRESHOLD and optimization_attempts < MAX_OPTIMIZATION_ATTEMPTS,
+  route back to content_generation to regenerate with improvement hints injected into strategy.
+
+Memory:
+  AgentCoreMemorySaver (AWS Bedrock) used as LangGraph checkpointer.
+  On "publish" decision the final state is persisted automatically.
+"""
 from __future__ import annotations
 
 import logging
 import os
-from typing import Any, Optional
-from typing_extensions import TypedDict
-from langgraph.graph import StateGraph, START, END
+from typing import Any
+
 from langchain_core.runnables import RunnableConfig
+from langgraph.graph import StateGraph, START, END
 
-# Import agent modules with fallback for different run contexts
+from models.state import PipelineState
+
+# Agent / service nodes
 try:
-    from backend.agents.compliance_agent import ComplianceResult, compliance_node
-    from backend.agents.Content_creation import ContentCreationAgent, ContentCreationOutput
-    from backend.services.Engagement import engagement_node, EngagementAnalysis
+    from backend.agents.knowledge_agent import knowledge_node
+    from backend.agents.strategy_agent import strategy_node
+    from backend.agents.Content_creation import content_node
+    from backend.agents.compliance_agent import compliance_node, ComplianceResult
+    from backend.agents.localization_agent import localization_node
+    from backend.agents.formatter_agent import formatter_node
+    from backend.services.Engagement import engagement_node, ENGAGEMENT_THRESHOLD
 except ImportError:
-    from agents.compliance_agent import ComplianceResult, compliance_node
-    from agents.Content_creation import ContentCreationAgent, ContentCreationOutput
-    from services.Engagement import engagement_node, EngagementAnalysis
+    from agents.knowledge_agent import knowledge_node
+    from agents.strategy_agent import strategy_node
+    from agents.Content_creation import content_node
+    from agents.compliance_agent import compliance_node, ComplianceResult
+    from agents.localization_agent import localization_node
+    from agents.formatter_agent import formatter_node
+    from services.Engagement import engagement_node, ENGAGEMENT_THRESHOLD
 
-# Import AgentCoreMemorySaver
+# AgentCore memory
 try:
     from amazon_agentcore.memory import AgentCoreMemorySaver
 except ImportError:
-    # Fallback for environments where AgentCore SDK is not installed
-    AgentCoreMemorySaver = None
+    AgentCoreMemorySaver = None  # type: ignore[assignment,misc]
 
 logger = logging.getLogger(__name__)
 
 SUPPORTED_PLATFORMS = {"linkedin", "instagram"}
+MAX_OPTIMIZATION_ATTEMPTS = 2
 
 
-# ============================================================
-# PipelineState TypedDict
-# ============================================================
+# ── Routing functions ────────────────────────────────────────────
 
-class PipelineState(TypedDict):
-    query: str
-    platform: str
-    tasks: list[str]
-    generated_content: Optional[Any]
-    compliance_result: Optional[Any]
-    engagement_analysis: Optional[Any]
-    human_decision: Optional[str]
-    edit_instructions: Optional[str]
-    memory_context: Optional[dict]
+def route_compliance(state: PipelineState) -> str:
+    """Route after compliance check."""
+    result = state.get("compliance_result")
+    if result is None:
+        raise ValueError("compliance_result missing from state")
 
-
-# ============================================================
-# Helpers
-# ============================================================
-
-def validate_required_field(state: PipelineState, field: str) -> None:
-    """Raise ValueError if a required field is missing (None) from PipelineState."""
-    if state.get(field) is None:
-        raise ValueError(f"Required field '{field}' is missing from PipelineState")
+    if result.status == "approved":
+        return "engagement_analysis_agent"
+    elif result.status == "needs_fix":
+        # compliance_node loops internally; if it exits with needs_fix
+        # it means MAX_FIX_ATTEMPTS was exhausted – treat as rejected.
+        logger.warning("Compliance exited with needs_fix after max attempts – rejecting.")
+        return END
+    else:  # rejected
+        return END
 
 
-# ============================================================
-# Node wrappers with required-field guards (8.6)
-# ============================================================
+def route_engagement(state: PipelineState) -> str:
+    """
+    Optimization loop: if score < threshold and retries remain,
+    route back to content generation with improvement hints.
+    """
+    analysis = state.get("engagement_analysis")
+    attempts = state.get("optimization_attempts", 0)
 
-def content_node(state: PipelineState) -> PipelineState:
-    validate_required_field(state, "query")
-    validate_required_field(state, "platform")
-    agent = ContentCreationAgent()
-    output = agent.create_social_post(
-        topic=state["query"],
-        platform=state["platform"],
-        memory_context=state.get("memory_context"),
-    )
-    return {**state, "generated_content": output}
+    if analysis is None:
+        # Engagement failed – skip optimization, proceed to localization
+        return "localization_agent"
+
+    score = analysis.expected_engagement_score
+    if score < ENGAGEMENT_THRESHOLD and attempts < MAX_OPTIMIZATION_ATTEMPTS:
+        logger.info(
+            "Engagement score %.2f < %.2f – optimization attempt %d/%d.",
+            score, ENGAGEMENT_THRESHOLD, attempts + 1, MAX_OPTIMIZATION_ATTEMPTS,
+        )
+        return "content_generation_agent"
+
+    return "localization_agent"
 
 
-def compliance_node_wrapper(state: PipelineState) -> PipelineState:
-    validate_required_field(state, "generated_content")
-    return compliance_node(state)
+def route_human_review(state: PipelineState) -> str:
+    """Route after human review decision."""
+    decision = state.get("human_decision")
+    if decision == "publish":
+        return END
+    elif decision == "edit":
+        return "content_generation_agent"
+    elif decision == "no":
+        return END
+    raise ValueError(f"Unknown human_decision: {decision!r}")
 
 
-def engagement_node_wrapper(state: PipelineState) -> PipelineState:
-    validate_required_field(state, "compliance_result")
-    return engagement_node(state)
+# ── Optimization-aware content node wrapper ──────────────────────
 
+def content_node_with_counter(state: PipelineState) -> PipelineState:
+    """
+    Wraps content_node to:
+      1. Increment optimization_attempts counter.
+      2. Inject improvement hints from the previous engagement analysis
+         into the strategy so the LLM knows what to fix.
+    """
+    attempts = state.get("optimization_attempts", 0)
+
+    # Inject improvement hints into strategy before regenerating
+    analysis = state.get("engagement_analysis")
+    if analysis and analysis.improvements:
+        strategy = dict(state.get("strategy") or {})
+        existing_use_more = dict(strategy.get("use_more") or {})
+        existing_use_more["improvements"] = analysis.improvements
+        strategy["use_more"] = existing_use_more
+        state = {**state, "strategy": strategy}
+
+    new_state = content_node(state)
+    return {**new_state, "optimization_attempts": attempts + 1}
+
+
+# ── Human review node ────────────────────────────────────────────
 
 def human_review_node(state: PipelineState) -> PipelineState:
     generated = state.get("generated_content")
-    engagement = state.get("engagement_analysis")
+    analysis = state.get("engagement_analysis")
+    formatted = state.get("formatted_posts", {})
 
     print("\n" + "=" * 60)
     print("HUMAN REVIEW")
     print("=" * 60)
+
     if generated:
-        print(f"Caption: {generated.caption}")
-        print(f"Image Prompt: {generated.image_prompt}")
-        print(f"Hashtags: {', '.join(generated.hashtags)}")
-    if engagement:
-        print(f"\nEngagement Score: {engagement.expected_engagement_score:.2f}")
-        print(f"Audience Reaction: {engagement.predicted_audience_reaction}")
-        print(f"Impact Summary: {engagement.post_impact_summary}")
-    else:
-        print("\nEngagement analysis: not available")
+        print(f"Caption      : {generated.caption}")
+        print(f"Image Prompt : {generated.image_prompt}")
+        print(f"Hashtags     : {', '.join(generated.hashtags)}")
+
+    if analysis:
+        print(f"\nEngagement Score    : {analysis.expected_engagement_score:.2f}")
+        print(f"Audience Reaction   : {analysis.predicted_audience_reaction}")
+        print(f"Impact Summary      : {analysis.post_impact_summary}")
+        if analysis.improvements:
+            print(f"Improvements        : {'; '.join(analysis.improvements)}")
+
+    if formatted:
+        print("\nFormatted Posts:")
+        for platform, post in formatted.items():
+            print(f"  [{platform.upper()}] {post.get('char_count', 0)} chars, "
+                  f"{len(post.get('hashtags', []))} hashtags")
+
     print("=" * 60)
 
-    valid_decisions = {"publish", "edit", "no"}
+    valid = {"publish", "edit", "no"}
     decision = ""
-    while decision not in valid_decisions:
+    while decision not in valid:
         decision = input("\nDecision (publish/edit/no): ").strip().lower()
-        if decision not in valid_decisions:
-            print(f"Invalid choice. Please enter one of: {', '.join(sorted(valid_decisions))}")
+        if decision not in valid:
+            print(f"Please enter one of: {', '.join(sorted(valid))}")
 
     edit_instructions = None
     if decision == "edit":
@@ -114,98 +178,108 @@ def human_review_node(state: PipelineState) -> PipelineState:
     return {**state, "human_decision": decision, "edit_instructions": edit_instructions}
 
 
-# ============================================================
-# Routing functions (8.1)
-# ============================================================
-
-def route_compliance(state: PipelineState) -> str:
-    compliance_result = state.get("compliance_result")
-    if compliance_result is None:
-        raise ValueError("Required field 'compliance_result' is missing from PipelineState")
-    status = compliance_result.status
-    if status == "approved":
-        return "engagement_analysis_agent"
-    elif status == "needs_fix":
-        return "compliance_agent"
-    else:  # rejected
-        return END
-
-
-def route_human_review(state: PipelineState) -> str:
-    decision = state.get("human_decision")
-    if decision == "publish":
-        return END
-    elif decision == "edit":
-        return "content_generation_agent"
-    elif decision == "no":
-        return END
-    else:
-        raise ValueError(f"Unknown human_decision value: {decision!r}. Expected one of: publish, edit, no")
-
-
-# ============================================================
-# Graph builder (8.3, 8.4)
-# ============================================================
+# ── Graph builder ────────────────────────────────────────────────
 
 def build_graph(checkpointer=None) -> Any:
     graph = StateGraph(PipelineState)
-    graph.add_node("content_generation_agent", content_node)
-    graph.add_node("compliance_agent", compliance_node_wrapper)
-    graph.add_node("engagement_analysis_agent", engagement_node_wrapper)
-    graph.add_node("human_review_agent", human_review_node)
 
-    graph.add_edge(START, "content_generation_agent")
-    graph.add_edge("content_generation_agent", "compliance_agent")
-    graph.add_conditional_edges("compliance_agent", route_compliance)
-    graph.add_edge("engagement_analysis_agent", "human_review_agent")
-    graph.add_conditional_edges("human_review_agent", route_human_review)
+    # Register nodes
+    graph.add_node("knowledge_agent",          knowledge_node)
+    graph.add_node("strategy_agent",           strategy_node)
+    graph.add_node("content_generation_agent", content_node_with_counter)
+    graph.add_node("compliance_agent",         compliance_node)
+    graph.add_node("engagement_analysis_agent",engagement_node)
+    graph.add_node("localization_agent",       localization_node)
+    graph.add_node("formatter_agent",          formatter_node)
+    graph.add_node("human_review_agent",       human_review_node)
+
+    # Edges
+    graph.add_edge(START,                       "knowledge_agent")
+    graph.add_edge("knowledge_agent",           "strategy_agent")
+    graph.add_edge("strategy_agent",            "content_generation_agent")
+    graph.add_edge("content_generation_agent",  "compliance_agent")
+    graph.add_conditional_edges("compliance_agent",          route_compliance)
+    graph.add_conditional_edges("engagement_analysis_agent", route_engagement)
+    graph.add_edge("localization_agent",        "formatter_agent")
+    graph.add_edge("formatter_agent",           "human_review_agent")
+    graph.add_conditional_edges("human_review_agent",        route_human_review)
 
     return graph.compile(checkpointer=checkpointer)
 
 
+# ── Checkpointer factory ─────────────────────────────────────────
+
 def _get_checkpointer():
-    """Build AgentCoreMemorySaver from environment variable."""
     if AgentCoreMemorySaver is None:
-        raise ImportError("AgentCoreMemorySaver is not available. Install the AWS AgentCore SDK.")
+        raise ImportError(
+            "AgentCoreMemorySaver not available. Install the AWS AgentCore SDK."
+        )
     memory_id = os.environ.get("AGENTCORE_MEMORY_ID")
     if not memory_id:
-        raise EnvironmentError("AGENTCORE_MEMORY_ID environment variable is not set")
+        raise EnvironmentError("AGENTCORE_MEMORY_ID environment variable is not set.")
     return AgentCoreMemorySaver(
         memory_id=memory_id,
         region_name=os.environ.get("AWS_REGION", "us-east-1"),
     )
 
 
-# ============================================================
-# run_pipeline (8.2, 8.5)
-# ============================================================
+# ── Public entry point ───────────────────────────────────────────
 
-def run_pipeline(query: str, platform: str, config: RunnableConfig | None = None) -> PipelineState:
-    # 8.2: Platform validation before any agent runs
+def run_pipeline(
+    query: str,
+    platform: str,
+    locale: str | None = None,
+    config: RunnableConfig | None = None,
+) -> PipelineState:
+    """
+    Execute the full social media content pipeline.
+
+    Args:
+        query:    Topic / brief for the post.
+        platform: Target platform ("linkedin" or "instagram").
+        locale:   Optional ISO 639-1 locale code for localization (e.g. "es").
+        config:   Optional LangGraph RunnableConfig (thread_id etc.).
+
+    Returns:
+        Final PipelineState after human review.
+    """
     if platform.lower() not in SUPPORTED_PLATFORMS:
         raise ValueError(
-            f"Unsupported platform '{platform}'. Supported: {', '.join(sorted(SUPPORTED_PLATFORMS))}"
+            f"Unsupported platform '{platform}'. "
+            f"Supported: {', '.join(sorted(SUPPORTED_PLATFORMS))}"
         )
 
     checkpointer = _get_checkpointer()
     compiled_graph = build_graph(checkpointer=checkpointer)
 
     initial_state: PipelineState = {
-        "query": query,
-        "platform": platform.lower(),
-        "tasks": [],
-        "generated_content": None,
-        "compliance_result": None,
-        "engagement_analysis": None,
-        "human_decision": None,
-        "edit_instructions": None,
-        "memory_context": None,
+        "query":                query,
+        "platform":             platform.lower(),
+        "tasks":                [],
+        "knowledge_context":    None,
+        "strategy":             None,
+        "generated_content":    None,
+        "optimization_attempts": 0,
+        "compliance_result":    None,
+        "engagement_analysis":  None,
+        "localization":         {"locale": locale} if locale else None,
+        "formatted_posts":      None,
+        "human_decision":       None,
+        "edit_instructions":    None,
+        "memory_context":       None,
     }
 
     result: PipelineState = compiled_graph.invoke(initial_state, config=config)
 
-    # 8.5: Memory write on publish
     if result.get("human_decision") == "publish":
         logger.info("Post published. State persisted to AgentCore memory via checkpointer.")
 
     return result
+
+
+# ── Backward-compat helper (used by tests) ───────────────────────
+
+def validate_required_field(state: PipelineState, field: str) -> None:
+    """Raise ValueError if a required field is None in PipelineState."""
+    if state.get(field) is None:
+        raise ValueError(f"Required field '{field}' is missing from PipelineState")

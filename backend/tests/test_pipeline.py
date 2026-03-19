@@ -12,7 +12,7 @@ os.environ.setdefault("AGENTCORE_MEMORY_ID", "dummy-memory-id-for-tests")
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import pytest
-from unittest.mock import MagicMock, patch, call
+from unittest.mock import MagicMock, patch
 
 from langgraph.graph import END
 
@@ -32,9 +32,14 @@ def _make_state(**overrides) -> dict:
         "query": "test query",
         "platform": "linkedin",
         "tasks": [],
+        "knowledge_context": None,
+        "strategy": None,
         "generated_content": None,
+        "optimization_attempts": 0,
         "compliance_result": None,
         "engagement_analysis": None,
+        "localization": None,
+        "formatted_posts": None,
         "human_decision": None,
         "edit_instructions": None,
         "memory_context": None,
@@ -53,10 +58,11 @@ class TestRoutingExamples:
         state = _make_state(compliance_result=result)
         assert route_compliance(state) == "engagement_analysis_agent"
 
-    def test_compliance_needs_fix_routes_to_compliance(self):
+    def test_compliance_needs_fix_routes_to_end(self):
+        # compliance_node loops internally; needs_fix on exit means max attempts hit → END
         result = ComplianceResult(status="needs_fix", reason="", corrected_text="fixed")
         state = _make_state(compliance_result=result)
-        assert route_compliance(state) == "compliance_agent"
+        assert route_compliance(state) == END
 
     def test_compliance_rejected_routes_to_end(self):
         result = ComplianceResult(status="rejected", reason="harmful content")
@@ -166,7 +172,7 @@ class TestEngagementFailure:
         from services.Engagement import engagement_node
 
         state = _make_state(
-            generated_content=MagicMock(caption="test caption"),
+            generated_content=MagicMock(caption="test caption", hashtags=[]),
             compliance_result=ComplianceResult(status="approved", reason=""),
         )
 

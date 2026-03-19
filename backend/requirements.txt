@@ -1,43 +1,58 @@
+# ── LangChain / LangGraph ────────────────────────────────────────
 langchain
 langchain-community
 langchain-core
 langchain-text-splitters
 langchain-huggingface
+langchain-groq
+langchain-aws
+langgraph
+langgraph-checkpoint-aws
+
+# ── AWS ──────────────────────────────────────────────────────────
+boto3
+amazon-agentcore          # AgentCoreMemorySaver (AWS Bedrock memory)
+
+# ── Supabase / pgvector ──────────────────────────────────────────
+supabase                  # Supabase Python client
+pgvector                  # pgvector Python helpers (optional, for local dev)
+
+# ── Embeddings ───────────────────────────────────────────────────
+sentence-transformers     # all-MiniLM-L6-v2 local embedding model
+
+# ── API / Web ────────────────────────────────────────────────────
 fastapi==0.104.1
 uvicorn[standard]==0.24.0
+python-multipart==0.0.6
+aiofiles==23.2.1
+websockets==12.0
+httpx==0.25.2
 
+# ── Database (optional local dev) ────────────────────────────────
 sqlalchemy==2.0.23
 alembic==1.12.1
 psycopg2-binary==2.9.9
-redis==5.0.1
 
+# ── Auth / Security ──────────────────────────────────────────────
 python-jose[cryptography]==3.3.0
 passlib[bcrypt]==1.7.4
-python-multipart==0.0.6
 email-validator==2.1.0
 pydantic[email]==2.5.0
 python-dotenv==1.0.0
 
+# ── Task queue / Cache ───────────────────────────────────────────
 celery==5.3.4
-websockets==12.0
-aiofiles==23.2.1
+redis==5.0.1
 
+# ── Media ────────────────────────────────────────────────────────
 pillow==10.1.0
-httpx==0.25.2
 
+# ── Testing ──────────────────────────────────────────────────────
 pytest==7.4.3
 pytest-asyncio==0.21.1
 hypothesis==6.112.2
 
+# ── Code quality ─────────────────────────────────────────────────
 black==23.11.0
 isort==5.12.0
 flake8==6.1.0
-
-# Orchestration
-langgraph
-langchain-aws
-langgraph-checkpoint-aws
-
-opensearch-py
-boto3
-langchain-groq
