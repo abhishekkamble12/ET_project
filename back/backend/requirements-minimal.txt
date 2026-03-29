@@ -1,0 +1,13 @@
+# Minimal core dependencies for running the backend
+pydantic[email]>=2.7.4
+python-dotenv>=1.0.0
+langchain>=0.3.0
+langchain-core>=0.3.15
+langchain-groq>=0.2.0
+langgraph>=0.4.5
+fastapi>=0.115.0
+uvicorn[standard]>=0.24.0
+sse-starlette>=1.8.2
+qdrant-client
+supabase
+httpx>=0.25.2

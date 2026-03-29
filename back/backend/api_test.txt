@@ -1,0 +1,265 @@
+========================================================
+  EngageTech AI Backend – Manual API Test Commands
+  Base URL: http://127.0.0.1:8000
+  Run server first: uvicorn main:app --reload --port 8000
+========================================================
+
+--------------------------------------------------------
+1. HEALTH CHECK
+   Confirms the server is alive.
+--------------------------------------------------------
+
+curl http://127.0.0.1:8000/health
+
+
+Expected response:
+{"status":"ok","service":"EngageTech AI Pipeline"}
+
+
+--------------------------------------------------------
+2. GENERATE (synchronous – full pipeline run)
+   Runs all 8 agents and blocks until done.
+   NOTE: This will take 30-60s as it calls real LLMs.
+--------------------------------------------------------
+
+curl -X POST http://127.0.0.1:8000/api/v1/generate ^
+  -H "Content-Type: application/json" ^
+  -H "X-Company-ID: demo-corp" ^
+  -d "{\"query\": \"Announce our new AI analytics dashboard\", \"platform\": \"linkedin\", \"locale\": \"en\"}"
+
+
+PowerShell version:
+Invoke-RestMethod -Uri "http://127.0.0.1:8000/api/v1/generate" `
+  -Method POST `
+  -Headers @{"Content-Type"="application/json"; "X-Company-ID"="demo-corp"} `
+  -Body '{"query": "Announce our new AI analytics dashboard", "platform": "linkedin", "locale": "en"}'
+
+
+Expected response shape:
+{
+  "session_id": "<uuid>",
+  "status": "completed",
+  "generated_post": {
+    "caption": "...",
+    "image_prompt": "...",
+    "hashtags": ["#AI", "..."],
+    "platform": "linkedin"
+  },
+  "formatted_posts": {
+    "linkedin": {"caption": "...", "hashtags": [...], "char_count": 400},
+    "instagram": {"caption": "...", "hashtags": [...], "char_count": 800}
+  },
+  "engagement_score": 0.82,
+  "compliance_status": "approved",
+  "metrics": {
+    "turnaround_seconds": 14.3,
+    "consistency_score": 0.97,
+    "engagement_improvement": 82.0,
+    "knowledge_summary": "Knowledge ingested: 12 documents"
+  }
+}
+
+
+--------------------------------------------------------
+3. STREAM (SSE – watch each agent complete in real time)
+   Open this URL in a browser or run the curl below.
+   Watch for WAITING_HUMAN event – copy the session_id.
+--------------------------------------------------------
+
+curl -X POST http://127.0.0.1:8000/api/v1/stream ^
+  -H "Content-Type: application/json" ^
+  -H "X-Company-ID: demo-corp" ^
+  -H "Accept: text/event-stream" ^
+  -d "{\"query\": \"Promote our sustainability initiative\", \"platform\": \"instagram\"}" ^
+  --no-buffer
+
+
+Expected SSE output (one event per agent):
+event: start
+data: {"session_id": "abc-123", "message": "Pipeline started"}
+
+event: agent_update
+data: {"session_id": "abc-123", "node": "knowledge_agent", "status": "completed"}
+
+event: agent_update
+data: {"session_id": "abc-123", "node": "strategy_agent", "status": "completed"}
+
+event: agent_update
+data: {"session_id": "abc-123", "node": "content_generation_agent", "status": "completed"}
+
+... (compliance, engagement, localization, formatter)
+
+event: WAITING_HUMAN
+data: {
+  "session_id": "abc-123",
+  "node": "human_review_agent",
+  "message": "Awaiting human review. POST /api/v1/approve to continue.",
+  "preview": {
+    "caption": "...",
+    "engagement_score": 0.82
+  }
+}
+
+  --> COPY the session_id from WAITING_HUMAN, use it in step 4
+
+
+--------------------------------------------------------
+4. APPROVE (resume after human review)
+   Replace <SESSION_ID> with the UUID from step 3.
+   decision options: publish | edit | reject
+--------------------------------------------------------
+
+-- PUBLISH:
+curl -X POST http://127.0.0.1:8000/api/v1/approve ^
+  -H "Content-Type: application/json" ^
+  -H "X-Company-ID: demo-corp" ^
+  -d "{\"session_id\": \"<SESSION_ID>\", \"decision\": \"publish\"}"
+
+
+-- EDIT (send back for revision):
+curl -X POST http://127.0.0.1:8000/api/v1/approve ^
+  -H "Content-Type: application/json" ^
+  -H "X-Company-ID: demo-corp" ^
+  -d "{\"session_id\": \"<SESSION_ID>\", \"decision\": \"edit\", \"edits\": \"Make the tone more casual and add a call-to-action\"}"
+
+
+-- REJECT:
+curl -X POST http://127.0.0.1:8000/api/v1/approve ^
+  -H "Content-Type: application/json" ^
+  -H "X-Company-ID: demo-corp" ^
+  -d "{\"session_id\": \"<SESSION_ID>\", \"decision\": \"reject\"}"
+
+
+Expected response:
+{
+  "session_id": "<SESSION_ID>",
+  "status": "publish",
+  "message": "Post published successfully",
+  "metrics": { "turnaround_seconds": 1.2, ... }
+}
+
+
+--------------------------------------------------------
+5. ENTERPRISE – UPLOAD DOCUMENT
+   Supported types: PDF, TXT, CSV, DOCX
+   Creates a sample test file first, then uploads it.
+--------------------------------------------------------
+
+-- Create a sample TXT file to upload:
+echo This is sample enterprise knowledge about our AI product. > test_doc.txt
+echo Our analytics dashboard improves productivity by 40 percent. >> test_doc.txt
+echo Key features: real-time insights, custom reports, AI predictions. >> test_doc.txt
+
+
+-- Upload it:
+curl -X POST http://127.0.0.1:8000/api/v1/enterprise/data/upload ^
+  -H "X-Company-ID: demo-corp" ^
+  -F "file=@test_doc.txt;type=text/plain" ^
+  -F "company_id=demo-corp" ^
+  -F "department=marketing"
+
+
+Expected response (202 Accepted):
+{
+  "doc_id": "<uuid>",
+  "filename": "test_doc.txt",
+  "chunk_count": 1,
+  "status": "indexed",
+  "message": "Indexing 1 chunks in background. doc_id=<uuid>"
+}
+
+  --> COPY the doc_id for step 7
+
+
+--------------------------------------------------------
+6. ENTERPRISE – LIST DOCUMENTS
+   Shows all documents indexed in Qdrant.
+--------------------------------------------------------
+
+curl http://127.0.0.1:8000/api/v1/enterprise/data/list ^
+  -H "X-Company-ID: demo-corp"
+
+
+Expected response:
+{
+  "documents": [
+    {
+      "doc_id": "<uuid>",
+      "filename": "test_doc.txt",
+      "company_id": "demo-corp",
+      "department": "marketing",
+      "chunk_count": 1,
+      "indexed_at": "2026-03-23T10:00:00+00:00"
+    }
+  ],
+  "total": 1
+}
+
+
+--------------------------------------------------------
+7. ENTERPRISE – DELETE DOCUMENT
+   Replace <DOC_ID> with the doc_id from step 5.
+--------------------------------------------------------
+
+curl -X DELETE http://127.0.0.1:8000/api/v1/enterprise/data/<DOC_ID> ^
+  -H "X-Company-ID: demo-corp"
+
+
+Expected response:
+{
+  "doc_id": "<DOC_ID>",
+  "status": "deleted",
+  "message": "Deleted 1 chunks for doc_id=<DOC_ID>"
+}
+
+
+--------------------------------------------------------
+8. AUTH ERROR TEST
+   Missing X-Company-ID header should return 401.
+--------------------------------------------------------
+
+curl -X POST http://127.0.0.1:8000/api/v1/generate ^
+  -H "Content-Type: application/json" ^
+  -d "{\"query\": \"test\", \"platform\": \"linkedin\"}"
+
+
+Expected response:
+{"detail":"X-Company-ID header is required"}
+
+
+--------------------------------------------------------
+9. VALIDATION ERROR TEST
+   Empty query should return 422.
+--------------------------------------------------------
+
+curl -X POST http://127.0.0.1:8000/api/v1/generate ^
+  -H "Content-Type: application/json" ^
+  -H "X-Company-ID: demo-corp" ^
+  -d "{\"query\": \"\", \"platform\": \"linkedin\"}"
+
+
+Expected response:
+{"detail": [{"type": "string_too_short", ...}]}
+
+
+--------------------------------------------------------
+10. INTERACTIVE DOCS (easiest way to test)
+    Open in browser – no curl needed.
+--------------------------------------------------------
+
+http://127.0.0.1:8000/docs      ← Swagger UI (click Try it out)
+http://127.0.0.1:8000/redoc     ← ReDoc
+http://127.0.0.1:8000/health    ← Quick health ping
+
+
+========================================================
+  QUICK TEST ORDER (recommended sequence):
+  1. /health          → confirm server is up
+  2. /docs            → explore all endpoints visually
+  3. Upload a doc     → step 5
+  4. List docs        → step 6
+  5. /stream          → step 3 (watch agents run live)
+  6. /approve         → step 4 (complete the loop)
+  7. Delete doc       → step 7
+  8. Auth error test  → step 8
+========================================================

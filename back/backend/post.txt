@@ -1,0 +1,81 @@
+# How to Test EngageTech AI Backend with Postman
+
+The backend is running at `http://localhost:8000`. All protected endpoints require an `X-Company-ID` header for identification.
+
+---
+
+## 1. Global Setup (Headers)
+In Postman, for **every request**, add the following in the **Headers** tab:
+- **Key**: `X-Company-ID`
+- **Value**: `666` (or any string identifying your company)
+
+---
+
+## 2. Generate Content (Synchronous)
+This endpoint runs the full 8-agent pipeline and returns the final post once finished.
+
+- **Method**: `POST`
+- **URL**: `http://localhost:8000/api/v1/generate`
+- **Body** (Raw JSON):
+```json
+{
+  "query": "The future of sustainable architecture in smart cities",
+  "platform": "linkedin",
+  "locale": "en-US"
+}
+```
+
+---
+
+## 3. Stream Content (SSE - Real-time)
+This returns a continuous stream of updates as each agent completes its task.
+
+- **Method**: `POST`
+- **URL**: `http://localhost:8000/api/v1/stream`
+- **Body** (Raw JSON):
+```json
+{
+  "query": "Quantum computing impact on cybersecurity",
+  "platform": "instagram",
+  "locale": "en-US"
+}
+```
+*Note: Postman will show "Streaming response" and you will see events like `agent_update` appearing one by one.*
+
+---
+
+## 4. Approve / Edit Content
+If you use the `/stream` endpoint, it will pause at the `human_review_agent` and emit a `WAITING_HUMAN` event with a `session_id`. Use that ID to approve or request edits.
+
+- **Method**: `POST`
+- **URL**: `http://localhost:8000/api/v1/approve`
+- **Body** (Raw JSON):
+```json
+{
+  "session_id": "YOUR_SESSION_ID_FROM_STREAM",
+  "decision": "publish",
+  "edits": null
+}
+```
+*Decisions: `publish`, `edit`, `reject`*
+
+---
+
+## 5. Enterprise Knowledge (RAG)
+### Upload a Document
+- **Method**: `POST`
+- **URL**: `http://localhost:8000/api/v1/enterprise/data/upload`
+- **Body** (form-data):
+  - `file`: (Select a PDF or TXT file)
+  - `company_id`: `666`
+  - `department`: `marketing`
+
+### List Documents
+- **Method**: `GET`
+- **URL**: `http://localhost:8000/api/v1/enterprise/data/list`
+
+---
+
+## 6. Health Check
+- **Method**: `GET`
+- **URL**: `http://localhost:8000/health`

@@ -1,0 +1,61 @@
+# ── Core dependency anchor ───────────────────────────────────────
+pydantic[email]>=2.7.4
+python-dotenv>=1.0.0
+
+# ── LangChain / LangGraph ────────────────────────────────────────
+langchain>=0.3.0
+langchain-community>=0.3.0
+langchain-core>=0.3.15,<0.4.0
+langchain-text-splitters>=0.3.0
+langchain-huggingface>=0.1.0
+langchain-groq>=0.2.0
+langchain-aws>=0.2.10
+langgraph>=0.4.5
+# langgraph-checkpoint-aws>=1.0.0  ← optional AWS
+# ── AWS (optional) ───────────────────────────────────────────────
+boto3>=1.40.19
+# amazon-agentcore  ← AWS-internal; use MemorySaver fallback instead
+
+# ── Supabase / pgvector ──────────────────────────────────────────
+supabase
+pgvector
+
+# ── Embeddings ───────────────────────────────────────────────────
+sentence-transformers
+
+# ── Vector DB ────────────────────────────────────────────────────
+qdrant-client
+
+# ── API / Web ────────────────────────────────────────────────────
+fastapi>=0.115.0
+uvicorn[standard]>=0.24.0
+python-multipart>=0.0.9
+aiofiles>=23.2.1
+websockets>=12.0
+httpx>=0.25.2
+sse-starlette>=1.8.2
+pypdf>=4.0.0
+python-docx>=1.1.0
+
+# ── Database (optional local dev) ────────────────────────────────
+sqlalchemy>=2.0.23
+alembic>=1.12.1
+psycopg2-binary>=2.9.9
+
+# ── Auth / Security ──────────────────────────────────────────────
+python-jose[cryptography]>=3.3.0
+passlib[bcrypt]>=1.7.4
+email-validator>=2.1.0
+
+# ── Media ────────────────────────────────────────────────────────
+pillow>=10.1.0
+
+# ── Testing ──────────────────────────────────────────────────────
+pytest>=7.4.3
+pytest-asyncio>=0.21.1
+hypothesis>=6.112.2
+
+# ── Code quality ─────────────────────────────────────────────────
+black>=23.11.0
+isort>=5.12.0
+flake8>=6.1.0
