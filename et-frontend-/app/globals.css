@@ -1,0 +1,41 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html, body {
+  min-height: 100%;
+  margin: 0;
+  background-color: #0A0F1C;
+  color: #F1F5F9;
+  font-family: 'Inter', sans-serif;
+}
+
+body {
+  background-image: radial-gradient(circle at 20% 20%, rgba(0, 212, 255, 0.14), transparent 40%),
+    radial-gradient(circle at 82% 28%, rgba(34, 197, 94, 0.08), transparent 36%),
+    linear-gradient(160deg, #0A0F1C 0%, #111827 100%);
+}
+
+.glass-card {
+  background: rgba(17, 24, 39, 0.72);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  box-shadow: 0 14px 38px rgba(0, 0, 0, 0.35), inset 0 0 0 1px rgba(255, 255, 255, 0.08);
+  backdrop-filter: blur(16px);
+}
+
+@keyframes pulse-cyan {
+  0%, 100% { box-shadow: 0 0 8px rgba(0,212,255,.2), 0 0 18px rgba(0,212,255,.09); }
+  50% { box-shadow: 0 0 16px rgba(0,212,255,.42), 0 0 24px rgba(0,212,255,.2); }
+}
+
+.agent-node-active {
+  animation: pulse-cyan 1.2s ease-in-out infinite;
+}
